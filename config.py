@@ -4,7 +4,8 @@ ADMINS = [8414792453, 1553715060]
 
 CHANNELS = {
     "Wiazy Project": "https://t.me/WiazyProject",
-    "Wiazy Chat": "https://t.me/WiazyChat"
+    "Wiazy Chat": "https://t.me/WiazyChat",
+    "Wiazy Bio": "https://t.me/SenkuLose"
 }
 
 # ⚠️ ВАЖНО: ТОЛЬКО ID, НЕ @username
