@@ -1,83 +1,97 @@
 import csv
 import os
 import random
+import re
 from datetime import datetime, timedelta
-
-from aiogram import F
-from aiogram.types import (
-    Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery,
-)
+from typing import Dict, List, Optional
+from aiogram import F, Bot, Dispatcher
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
+from aiogram.client.default import DefaultBotProperties
 
-from config import ADMINS
+BOTTOKEN = "8572750987:AAGHL1WKnWOfjchc-szBSwAOuTsJvNCiSlM"
+ADMINS = [8414792453, 1553715060]
 
-GOLD_BALANCE_FILE = "gold_balance.csv"
-GOLD_WITHDRAW_FILE = "gold_withdraw.csv"
+GOLDBALANCEFILE = "goldbalance.csv"
+GOLDWITHDRAWFILE = "goldwithdraw.csv"
+PROMOCODESFILE = "promocodes.csv"
+PROMOUSEDFILE = "promoused.csv"
 
-EMOJIS = ["❄️", "💦", "☃️", "☔️", "🫧"]
-EARN_COOLDOWN = 2 * 60 * 60
-MIN_WITHDRAW = 50
+EMOJIS = ["🪙", "💰", "⭐", "🎉", "🔥"]
+EARNCOOLDOWN = 2.5 * 60 * 60  # 2.5 часа (9000 секунд)
+MINWITHDRAW = 50
 
 class GoldState(StatesGroup):
-    waiting_withdraw_amount = State()
-    waiting_withdraw_proof = State()
+    waiting_withdrawamount = State()
+    waiting_withdrawproof = State()
+    waiting_number = State()
+    waiting_promocode = State()
 
-def init_gold_files():
-    if not os.path.exists(GOLD_BALANCE_FILE):
-        with open(GOLD_BALANCE_FILE, "w", newline="", encoding="utf-8") as f:
+def initgoldfiles():
+    if not os.path.exists(GOLDBALANCEFILE):
+        with open(GOLDBALANCEFILE, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(["user_id", "balance", "last_earn"])
-    if not os.path.exists(GOLD_WITHDRAW_FILE):
-        with open(GOLD_WITHDRAW_FILE, "w", newline="", encoding="utf-8") as f:
+            writer.writerow(["userid", "balance", "lastearn"])
+    
+    if not os.path.exists(GOLDWITHDRAWFILE):
+        with open(GOLDWITHDRAWFILE, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(["user_id", "username", "amount", "status", "proof_file_id"])
+            writer.writerow(["userid", "username", "amount", "status", "prooffileid"])
+    
+    if not os.path.exists(PROMOCODESFILE):
+        with open(PROMOCODESFILE, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(["code", "maxuses", "currentuses", "goldamount", "createdby", "createdat"])
+    
+    if not os.path.exists(PROMOUSEDFILE):
+        with open(PROMOUSEDFILE, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(["userid", "promocode", "usedat"])
 
-def get_user_row(user_id: int):
-    if not os.path.exists(GOLD_BALANCE_FILE):
+def getuserrow(userid: int):
+    if not os.path.exists(GOLDBALANCEFILE):
         return None
-    with open(GOLD_BALANCE_FILE, newline="", encoding="utf-8") as f:
+    with open(GOLDBALANCEFILE, 'r', newline='', encoding='utf-8') as f:
         rows = list(csv.reader(f))
-    for row in rows[1:]:
-        if row and len(row) >= 3 and row[0] == str(user_id):
-            return row
+        for row in rows[1:]:
+            if row and len(row) >= 3 and row[0] == str(userid):
+                return row
     return None
 
-def update_balance(user_id: int, diff: int, set_last_earn: bool = False):
-    if not os.path.exists(GOLD_BALANCE_FILE):
-        init_gold_files()
-    with open(GOLD_BALANCE_FILE, newline="", encoding="utf-8") as f:
+def updatebalance(userid: int, diff: int, setlastearn: bool = False):
+    if not os.path.exists(GOLDBALANCEFILE):
+        initgoldfiles()
+    
+    with open(GOLDBALANCEFILE, 'r', newline='', encoding='utf-8') as f:
         rows = list(csv.reader(f))
+    
     if not rows:
-        rows = [["user_id", "balance", "last_earn"]]
+        rows = [["userid", "balance", "lastearn"]]
+    
     found = False
     for i in range(1, len(rows)):
-        if len(rows[i]) >= 3 and rows[i][0] == str(user_id):
+        if len(rows[i]) >= 3 and rows[i][0] == str(userid):
             try:
                 bal = int(rows[i][1])
                 bal += diff
                 rows[i][1] = str(max(bal, 0))
-                if set_last_earn:
+                if setlastearn:
                     rows[i][2] = datetime.now().isoformat()
                 found = True
             except (IndexError, ValueError):
                 pass
             break
+    
     if not found:
-        rows.append([
-            str(user_id),
-            str(max(diff, 0)),
-            datetime.now().isoformat() if set_last_earn else ""
-        ])
-    with open(GOLD_BALANCE_FILE, "w", newline="", encoding="utf-8") as f:
+        rows.append([str(userid), str(max(diff, 0)), "0" if setlastearn else ""])
+    
+    with open(GOLDBALANCEFILE, 'w', newline='', encoding='utf-8') as f:
         csv.writer(f).writerows(rows)
 
-def get_balance(user_id: int) -> int:
-    row = get_user_row(user_id)
+def getbalance(userid: int) -> int:
+    row = getuserrow(userid)
     if not row or len(row) < 2:
         return 0
     try:
@@ -85,220 +99,484 @@ def get_balance(user_id: int) -> int:
     except (ValueError, IndexError):
         return 0
 
-def can_earn(user_id: int) -> bool:
-    row = get_user_row(user_id)
+def canearn(userid: int) -> bool:
+    row = getuserrow(userid)
     if not row or len(row) < 3 or not row[2]:
         return True
     try:
         last = datetime.fromisoformat(row[2])
-        return (datetime.now() - last).total_seconds() >= EARN_COOLDOWN
+        return (datetime.now() - last).total_seconds() > EARNCOOLDOWN
     except (ValueError, IndexError):
         return True
 
-def gold_menu_kb():
+def hasuserusedpromo(userid: int, promocode: str) -> bool:
+    if not os.path.exists(PROMOUSEDFILE):
+        return False
+    with open(PROMOUSEDFILE, 'r', newline='', encoding='utf-8') as f:
+        rows = list(csv.reader(f))
+        for row in rows[1:]:
+            if len(row) >= 2 and row[0] == str(userid) and row[1].lower() == promocode.lower():
+                return True
+    return False
+
+def markpromoused(userid: int, promocode: str):
+    with open(PROMOUSEDFILE, 'a', newline='', encoding='utf-8') as f:
+        csv.writer(f).writerow([userid, promocode.upper(), datetime.now().isoformat()])
+
+def createpromocode(code: str, maxuses: int, goldamount: int, adminid: int) -> bool:
+    with open(PROMOCODESFILE, 'a', newline='', encoding='utf-8') as f:
+        csv.writer(f).writerow([code.upper(), maxuses, 0, goldamount, adminid, datetime.now().isoformat()])
+    return True
+
+def getpromocodes() -> List[Dict]:
+    if not os.path.exists(PROMOCODESFILE):
+        return []
+    with open(PROMOCODESFILE, 'r', newline='', encoding='utf-8') as f:
+        rows = list(csv.reader(f))
+        promos = []
+        for row in rows[1:]:
+            if len(row) >= 6 and int(row[2]) < int(row[1]):
+                promos.append({
+                    "code": row[0],
+                    "maxuses": int(row[1]),
+                    "currentuses": int(row[2]),
+                    "goldamount": int(row[3])
+                })
+        return promos
+
+def deletepromocode(code: str) -> bool:
+    if not os.path.exists(PROMOCODESFILE):
+        return False
+    with open(PROMOCODESFILE, 'r', newline='', encoding='utf-8') as f:
+        rows = list(csv.reader(f))
+    
+    newrows = [rows[0]]
+    deleted = False
+    for row in rows[1:]:
+        if row and row[0].lower() == code.lower():
+            deleted = True
+            continue
+        newrows.append(row)
+    
+    if deleted:
+        with open(PROMOCODESFILE, 'w', newline='', encoding='utf-8') as f:
+            csv.writer(f).writerows(newrows)
+        return True
+    return False
+
+def usepromocode(code: str, userid: int) -> Optional[int]:
+    if not os.path.exists(PROMOCODESFILE):
+        return None
+    
+    if hasuserusedpromo(userid, code):
+        return None
+    
+    with open(PROMOCODESFILE, 'r', newline='', encoding='utf-8') as f:
+        rows = list(csv.reader(f))
+    
+    for i, row in enumerate(rows[1:], 1):
+        if len(row) >= 4 and row[0].lower() == code.lower():
+            maxuses = int(row[1])
+            currentuses = int(row[2])
+            goldamount = int(row[3])
+            
+            if currentuses >= maxuses:
+                return None
+            
+            rows[i][2] = str(currentuses + 1)
+            with open(PROMOCODESFILE, 'w', newline='', encoding='utf-8') as f:
+                csv.writer(f).writerows(rows)
+            
+            markpromoused(userid, code)
+            return goldamount
+    return None
+
+def goldmenukb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💰 Заработать голды", callback_data="earn_gold")],
-        [InlineKeyboardButton(text="💼 Вывести голду", callback_data="withdraw_gold")],
-        [InlineKeyboardButton(text="📊 Баланс", callback_data="gold_balance")]
+        [
+            InlineKeyboardButton(text="🎄 Заработать", callback_data="earngold"),
+            InlineKeyboardButton(text="🎁 Промокод", callback_data="usepromo")
+        ],
+        [
+            InlineKeyboardButton(text="💰 Вывод", callback_data="withdrawgold"),
+            InlineKeyboardButton(text="❄️ Баланс", callback_data="goldbalance")
+        ]
     ])
 
-def register_gold_handlers(dp, bot):
-    init_gold_files()
+def promolistkb(promos: List[Dict]):
+    keyboard = []
+    for promo in promos:
+        remaining = promo["maxuses"] - promo["currentuses"]
+        text = f"🎁 {promo['code']} ({remaining}/{promo['maxuses']})"
+        keyboard.append([InlineKeyboardButton(text=text, callback_data=f"adminpromo_{promo['code']}")])
+    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="closepromo")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    # /gold — команда показать баланс
+def registergoldhandlers(dp: Dispatcher, bot: Bot):
+    initgoldfiles()
+    
     @dp.message(Command("gold"))
-    async def cmd_gold(message: Message):
-        bal = get_balance(message.from_user.id)
-        mark = "✅" if bal >= MIN_WITHDRAW else "❌"
+    async def cmdgold(message: Message):
+        bal = getbalance(message.from_user.id)
+        mark = "💎" if bal >= MINWITHDRAW else ""
         await message.answer(
-            f"Пользователь {message.from_user.id}\n"
-            f"Баланс: {bal} G {mark}",
-            reply_markup=gold_menu_kb()
+            f"🎄 <b>ID: `{message.from_user.id}`</b>\n\n"
+            f"💰 <b>Баланс: {bal} G</b> {mark}\n\n"
+            f"🎅 <b>НОВОГОДНЕЕ МЕНЮ:</b> ❄️",
+            reply_markup=goldmenukb(),
+            parse_mode="HTML"
         )
-
-    # Кнопка «Заработать голды»
-    @dp.callback_query(F.data == "earn_gold")
-    async def earn_gold(call: CallbackQuery):
-        if not can_earn(call.from_user.id):
-            await call.answer("Можно зарабатывать голду раз в 2 часа! 🕒", show_alert=True)
+    
+    @dp.callback_query(F.data == "earngold")
+    async def earngoldcall(call: CallbackQuery, state: FSMContext):
+        if not canearn(call.from_user.id):
+            await call.answer("⏱️ 2.5 часа между заработками! ❄️", show_alert=True)
             return
-
-        # случайный выигрышный смайл (индекс 0-4)
-        win_index = random.randint(0, 4)
-        win_emoji = EMOJIS[win_index]
         
-        # показываем смайлы в рандомном порядке, в одну строку
-        emojis_shuffled = EMOJIS[:]
-        random.shuffle(emojis_shuffled)
-
-        # создаем кнопки с индексами shuffled эмодзи
-        buttons = []
-        for i, emoji in enumerate(emojis_shuffled):
-            buttons.append(InlineKeyboardButton(text=emoji, callback_data=f"pick_{i}_{win_index}"))
-        
-        kb = InlineKeyboardMarkup(inline_keyboard=[buttons])  # одна строка
-
-        await call.message.answer(
-            "Привет! Я вижу ты хочешь заработать голдишки? )\n"
-            "Но это не так просто.\n"
-            "Угадай смайлик, от которого ты можешь выиграть голду.\n"
-            "Шанс 1 к 5 🎄",
-            reply_markup=kb
+        winindex = random.randint(0, 4)
+        await state.update_data(winindex=winindex)
+        await state.set_state(GoldState.waiting_number)
+        await call.message.edit_text(
+            f"🎲 <b>❄️ НОВОГОДНЯЯ ЛОТЕРЕЯ ❄️</b>\n\n"
+            f"🎄 Угадай правильный слот!\n\n"
+            f"🆔 <code>{call.from_user.id}</code>\n\n"
+            f"💰 <b>1, 2, 3, 4 или 5</b> 🎁",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="cancelearn")]
+            ]),
+            parse_mode="HTML"
         )
-
-    @dp.callback_query(F.data.startswith("pick_"))
-    async def pick_emoji(call: CallbackQuery):
-        _, user_choice_index, win_index = call.data.split("_")
-        user_choice_index = int(user_choice_index)
-        win_index = int(win_index)
+    
+    @dp.message(GoldState.waiting_number)
+    async def processusernumber(message: Message, state: FSMContext):
+        data = await state.get_data()
+        winindex = data.get('winindex', 0)
         
-        # строим строку результатов: ✅ только у выигрышного (win_index), ❌ у всех остальных
-        result_line = "".join("✅" if i == win_index else "❌" for i in range(5))
+        if not re.match(r'^\s*[1-5]\s*$', message.text.strip()):
+            await message.answer(
+                "❌ <b>Введи 1-5!</b>\n\n<code>4</code>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔄 ❄️ Попробовать снова ❄️", callback_data="earngold")]
+                ])
+            )
+            return
         
-        if user_choice_index == win_index:
-            # ВЫИГРЫШ: 1-14 голды
+        userchoice = int(message.text.strip()) - 1
+        resultline = "".join("✅" if i == winindex else "❌" for i in range(5))
+        
+        if userchoice == winindex:
             gold = random.randint(5, 15)
-            update_balance(call.from_user.id, gold, set_last_earn=True)
-            await call.message.edit_text(
-                f"{result_line}\n\n"
-                f"Ого, ты угадал! 🎉\n"
-                f"Шанс 1 к 5 и ты получаешь: {gold} G\n\n"
-                "Проверить баланс голды — /gold",
-                reply_markup=gold_menu_kb()
+            updatebalance(message.from_user.id, gold, setlastearn=True)
+            await message.answer(
+                f"🎉 <b>🎅 САНТА ПРИНЕС ПОДАРОК! 🎁</b>\n\n"
+                f"{resultline}\n\n"
+                f"❄️ <b>+{gold} G</b> ✨\n\n"
+                f"<code>/gold</code> 🎄",
+                reply_markup=goldmenukb(),
+                parse_mode="HTML"
             )
         else:
-            # ПРОИГРЫШ: 1-5 голды (все равно дают немного)
             gold = random.randint(1, 5)
-            update_balance(call.from_user.id, gold, set_last_earn=True)
-            await call.message.edit_text(
-                f"{result_line}\n\n"
-                f"Увы, ты не угадал 😔\n"
-                f"Но за участие: {gold} G\n"
-                f"Попробуй через 2 часа ещё раз 🎄",
-                reply_markup=gold_menu_kb()
+            updatebalance(message.from_user.id, gold, setlastearn=True)
+            await message.answer(
+                f"😔 <b>Не угадал...</b> 🎄\n\n"
+                f"{resultline}\n\n"
+                f"💰 <b>+{gold} G</b> 🎁\n\n"
+                f"⏳ <b>2.5 часа до следующей попытки!</b> ❄️",
+                reply_markup=goldmenukb(),
+                parse_mode="HTML"
             )
-
-    # Кнопка «Баланс» из меню
-    @dp.callback_query(F.data == "gold_balance")
-    async def gold_balance(call: CallbackQuery):
-        bal = get_balance(call.from_user.id)
-        mark = "✅" if bal >= MIN_WITHDRAW else "❌"
-        await call.message.answer(
-            f"Пользователь {call.from_user.id}\n"
-            f"Баланс: {bal} G {mark}",
-            reply_markup=gold_menu_kb()
+        await state.clear()
+    
+    @dp.callback_query(F.data == "cancelearn")
+    async def cancelearncall(call: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await call.message.edit_text(
+            "❌ <b>Отменено!</b> 🎄",
+            reply_markup=goldmenukb(),
+            parse_mode="HTML"
         )
-
-    # Кнопка «Вывести голду»
-    @dp.callback_query(F.data == "withdraw_gold")
-    async def withdraw_gold(call: CallbackQuery, state: FSMContext):
-        bal = get_balance(call.from_user.id)
-        if bal < MIN_WITHDRAW:
-            await call.answer("Недостаточно голды для вывода (минимум 50 G).", show_alert=True)
+    
+    @dp.callback_query(F.data == "goldbalance")
+    async def goldbalancecall(call: CallbackQuery):
+        bal = getbalance(call.from_user.id)
+        mark = "💎" if bal >= MINWITHDRAW else ""
+        await call.message.answer(
+            f"🆔 ID: <code>{call.from_user.id}</code>\n\n"
+            f"💰 Баланс: <b>{bal}</b> G {mark}",
+            reply_markup=goldmenukb(),
+            parse_mode="HTML"
+        )
+    
+    @dp.callback_query(F.data == "withdrawgold")
+    async def withdrawgoldcall(call: CallbackQuery, state: FSMContext):
+        bal = getbalance(call.from_user.id)
+        if bal < MINWITHDRAW:
+            await call.answer(f"💰 Минимум {MINWITHDRAW} G!", show_alert=True)
             return
-
-        await state.set_state(GoldState.waiting_withdraw_amount)
+        
+        await state.set_state(GoldState.waiting_withdrawamount)
         await call.message.answer(
-            f"У вас {bal} G.\n"
-            f"Минимум вывода: {MIN_WITHDRAW} G.\n"
-            "Введите сумму для вывода:"
+            f"🎄 <b>Баланс: {bal} G</b>\n\n"
+            f"💎 <b>Минимум {MINWITHDRAW} G</b>\n\n"
+            f"🎁 <b>Сумма вывода:</b> ❄️",
+            parse_mode="HTML"
         )
-
-    @dp.message(GoldState.waiting_withdraw_amount)
-    async def process_withdraw_amount(message: Message, state: FSMContext):
-        bal = get_balance(message.from_user.id)
+    
+    @dp.message(GoldState.waiting_withdrawamount)
+    async def processwithdrawamount(message: Message, state: FSMContext):
+        bal = getbalance(message.from_user.id)
         try:
             amount = int(message.text)
         except ValueError:
-            await message.answer("Введите число.")
+            await message.answer("❌ Введи число!")
             return
-
-        if amount < MIN_WITHDRAW:
-            await message.answer(f"Минимум для вывода: {MIN_WITHDRAW} G.")
+        
+        if amount < MINWITHDRAW:
+            await message.answer(f"💰 Минимум {MINWITHDRAW} G!")
             return
         if amount > bal:
-            await message.answer("У вас нет столько голды.")
+            await message.answer("❌ Недостаточно!")
             return
-
+        
         await state.update_data(amount=amount)
-        await state.set_state(GoldState.waiting_withdraw_proof)
+        await state.set_state(GoldState.waiting_withdrawproof)
         await message.answer(
-            "Отправьте скриншот Tac 9 Tie Die за эту сумму (можно отправлять только фото)."
+            f"📸 <b>❄️ Скриншот Tie Dye ❄️</b>\n\n"
+            f"💎 <b>{amount} G</b>! 🎁\n\n"
+            f"✅ <b>Только после подтверждения!</b> 🎅",
+            parse_mode="HTML"
         )
-
-    @dp.message(GoldState.waiting_withdraw_proof, F.photo)
-    async def process_withdraw_proof(message: Message, state: FSMContext):
+    
+    @dp.message(GoldState.waiting_withdrawproof, F.photo)
+    async def processwithdrawproof(message: Message, state: FSMContext):
         data = await state.get_data()
         amount = data["amount"]
-        photo_id = message.photo[-1].file_id
-
-        # списываем голду
-        update_balance(message.from_user.id, -amount, set_last_earn=False)
-
-        # записываем заявку
-        with open(GOLD_WITHDRAW_FILE, "a", newline="", encoding="utf-8") as f:
+        photoid = message.photo[-1].file_id
+        
+        updatebalance(message.from_user.id, -amount, setlastearn=False)
+        with open(GOLDWITHDRAWFILE, 'a', newline='', encoding='utf-8') as f:
             csv.writer(f).writerow([
                 message.from_user.id,
-                message.from_user.username,
-                amount,
-                "pending",
-                photo_id
+                message.from_user.username or "nousername",
+                amount, "pending", photoid
             ])
-
+        
         await state.clear()
-
         await message.answer(
-            "Заявка на вывод создана! 🎄\n"
-            "Подождите, пока администратор проверит скриншот.",
-            reply_markup=gold_menu_kb()
+            "✅ <b>Заявка создана!</b>\n✅ Ожидайте выплату! 🎄",
+            reply_markup=goldmenukb(),
+            parse_mode="HTML"
         )
-
-        # шлём админам заявку на вывод
+        
         for admin in ADMINS:
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Подтвердить вывод", callback_data=f"confirm_withdraw_{message.from_user.id}_{amount}")]
+                [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirmwithdraw_{message.from_user.id}_{amount}")]
             ])
-            await bot.send_photo(
-                admin,
-                photo=photo_id,
-                caption=(
-                    f"Заявка на вывод голды\n"
-                    f"Пользователь @{message.from_user.username}\n"
-                    f"Вывод: {amount} G"
-                ),
-                reply_markup=kb
+            try:
+                await message.bot.send_photo(
+                    admin, photo=photoid,
+                    caption=f"💰 <b>Заявка на вывод</b>\n\n"
+                            f"👤 {message.from_user.username or 'nousername'}\n"
+                            f"💎 {amount} G",
+                    reply_markup=kb,
+                    parse_mode="HTML"
+                )
+            except:
+                pass
+    
+    @dp.message(Command("promo"))
+    async def cmdpromo(message: Message, state: FSMContext):
+        await state.set_state(GoldState.waiting_promocode)
+        await message.answer(
+            f"🎁 <b>🎄 НОВОГОДНИЙ ПРОМОКОД 🎅</b>\n\n"
+            f"💎 <b>Введи код:</b> ❄️",
+            parse_mode="HTML"
+        )
+    
+    @dp.message(GoldState.waiting_promocode)
+    async def processpromo(message: Message, state: FSMContext):
+        code = message.text.strip().upper()
+        gold = usepromocode(code, message.from_user.id)
+        
+        if gold:
+            updatebalance(message.from_user.id, gold, setlastearn=False)
+            bal = getbalance(message.from_user.id)
+            await message.answer(
+                f"🎉 <b>🎁 АКТИВИРОВАН! ❄️</b>\n\n"
+                f"💎 <b>+{gold}</b> G\n"
+                f"💰 <b>Баланс: {bal}</b> G\n\n"
+                f"🎄 <code>{code}</code>\n"
+                f"✨ <b>С Новым годом! 🎅</b>",
+                reply_markup=goldmenukb(),
+                parse_mode="HTML"
             )
-
-    # подтверждение вывода админом
-    @dp.callback_query(F.data.startswith("confirm_withdraw_"))
-    async def confirm_withdraw(call: CallbackQuery):
-        if call.from_user.id not in ADMINS:
-            await call.answer("Недостаточно прав.", show_alert=True)
+        else:
+            if hasuserusedpromo(message.from_user.id, code):
+                await message.answer(
+                    f"🎁 Код: <code>{code}</code>\n\n"
+                    f"❌ <b>Уже использовал!</b>\n"
+                    f"❌ Один раз на аккаунт!",
+                    reply_markup=goldmenukb(),
+                    parse_mode="HTML"
+                )
+            else:
+                await message.answer(
+                    f"🎁 Код: <code>{code}</code>\n\n"
+                    f"❌ <b>Неверный/истек!</b>",
+                    reply_markup=goldmenukb(),
+                    parse_mode="HTML"
+                )
+        await state.clear()
+    
+    @dp.callback_query(F.data == "usepromo")
+    async def btnusepromocall(call: CallbackQuery, state: FSMContext):
+        await call.message.answer(
+            "🎁 <code>/promo КОД</code>",
+            reply_markup=goldmenukb(),
+            parse_mode="HTML"
+        )
+    
+    @dp.message(Command("cpromo"))
+    async def cmdcreatepromo(message: Message):
+        if message.from_user.id not in ADMINS:
+            await message.answer("❌ Нет доступа!")
             return
-
+        
+        match = re.match(r'/cpromo\s+(\d+)\s+(\d+)\s+(.+)', message.text)
+        if not match:
+            await message.answer(
+                "❌\n\n<code>/cpromo 3 30 WIAZY</code>\n\n"
+                "👉 активаций | голды | код",
+                parse_mode="HTML"
+            )
+            return
+        
+        maxuses, goldamount, code = int(match.group(1)), int(match.group(2)), match.group(3).strip().upper()
+        if createpromocode(code, maxuses, goldamount, message.from_user.id):
+            await message.answer(
+                f"✅ <b>Создан!</b>\n\n"
+                f"<code>{code}</code>\n"
+                f"🔢 Активаций: <b>{maxuses}</b>\n"
+                f"💎 Голды: <b>{goldamount}</b> G\n\n"
+                f"✨ Готов к использованию! ✨",
+                parse_mode="HTML"
+            )
+        else:
+            await message.answer("❌ Ошибка!")
+    
+    @dp.message(Command("dpromo"))
+    async def cmddeletepromo(message: Message):
+        if message.from_user.id not in ADMINS:
+            await message.answer("❌ Нет доступа!")
+            return
+        
+        promos = getpromocodes()
+        if not promos:
+            await message.answer("❌ Промокодов нет!")
+            return
+        
+        await message.answer(
+            f"📱 <b>{len(promos)} промокод(а/ов)</b>",
+            reply_markup=promolistkb(promos),
+            parse_mode="HTML"
+        )
+    
+    @dp.callback_query(F.data.startswith("adminpromo_"))
+    async def adminpromostatscall(call: CallbackQuery):
+        if call.from_user.id not in ADMINS:
+            await call.answer("❌ Нет доступа!", show_alert=True)
+            return
+        
+        try:
+            code = call.data.replace("adminpromo_", "")
+            if not code:
+                await call.answer("❌ Неверный промокод!", show_alert=True)
+                return
+        except:
+            await call.answer("❌ Ошибка данных!", show_alert=True)
+            return
+        
+        promos = getpromocodes()
+        promo_found = False
+        for promo in promos:
+            if promo["code"] == code:
+                remaining = promo["maxuses"] - promo["currentuses"]
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"deletepromo_{code}")],
+                    [InlineKeyboardButton(text="❌ Закрыть", callback_data="closepromo")]
+                ])
+                await call.message.edit_text(
+                    f"🎁 <b>{code}</b>\n\n"
+                    f"Всего: {promo['maxuses']}\n"
+                    f"Использовано: {promo['currentuses']}\n"
+                    f"Осталось: <b>{remaining}</b>\n\n"
+                    f"💎 Награда: {promo['goldamount']} G",
+                    reply_markup=kb,
+                    parse_mode="HTML"
+                )
+                promo_found = True
+                break
+        
+        if not promo_found:
+            await call.answer("❌ Промокод не найден!", show_alert=True)
+    
+    @dp.callback_query(F.data.startswith("deletepromo_"))
+    async def deletepromocall(call: CallbackQuery):
+        if call.from_user.id not in ADMINS:
+            await call.answer("❌ Нет доступа!", show_alert=True)
+            return
+        
+        try:
+            code = call.data.replace("deletepromo_", "")
+            if not code:
+                await call.answer("❌ Неверный промокод!", show_alert=True)
+                return
+        except:
+            await call.answer("❌ Ошибка данных!", show_alert=True)
+            return
+        
+        if deletepromocode(code):
+            await call.message.edit_text(
+                f"🎁 <b>{code}</b>\n\n✅ <b>Промокод удален!</b> 🎄",
+                reply_markup=goldmenukb(),
+                parse_mode="HTML"
+            )
+        else:
+            await call.answer("❌ Ошибка удаления!", show_alert=True)
+    
+    @dp.callback_query(F.data == "closepromo")
+    async def closepromocall(call: CallbackQuery):
+        try:
+            await call.message.delete()
+        except:
+            pass
+        await call.message.answer("🔙 Главное меню", reply_markup=goldmenukb())
+    
+    @dp.callback_query(F.data.startswith("confirmwithdraw_"))
+    async def confirmwithdrawcall(call: CallbackQuery):
+        if call.from_user.id not in ADMINS:
+            await call.answer("❌ Нет доступа!", show_alert=True)
+            return
+        
         parts = call.data.split("_")
         if len(parts) < 4:
-            await call.answer("Ошибка: неверные данные.", show_alert=True)
+            await call.answer("❌ Неверные данные!", show_alert=True)
             return
-
-        user_id_str, amount_str = parts[2], parts[3]
+        
         try:
-            user_id = int(user_id_str)
-            amount = int(amount_str)
-        except ValueError:
-            await call.answer("Ошибка: неверные данные.", show_alert=True)
-            return
+            userid = int(parts[2])
+            amount = int(parts[3])
+            await call.message.answer("✅ Выплата подтверждена! 🎄")
+            await call.bot.send_message(userid, f"💰 <b>{amount} G</b> выплачено! 🎁", parse_mode="HTML")
+        except:
+            await call.answer("❌ Ошибка обработки!", show_alert=True)
 
-        await call.message.answer(
-            "Отправьте скриншот, где вы купили скин (для отчёта). Только фото."
-        )
-        await call.answer("Теперь отправьте скриншот покупки.", show_alert=False)
-
-        # уведомляем пользователя
-        try:
-            await bot.send_message(
-                user_id,
-                f"✅ Вывод {amount} G подтверждён администратором! 🎄"
-            )
-        except Exception:
-            pass
+if __name__ == "__main__":
+    bot = Bot(token=BOTTOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    dp = Dispatcher()
+    registergoldhandlers(dp, bot)
+    print("🚀 Gold бот запущен! 🎄❄️")
+    import asyncio
+    asyncio.run(dp.start_polling(bot))
